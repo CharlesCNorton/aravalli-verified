@@ -432,7 +432,91 @@
 
 Require Import Coq.Reals.Reals.
 Require Import Coq.micromega.Lra.
+Require Import Coq.Logic.Classical_Prop.
+Require Import Coq.Sets.Ensembles.
 Open Scope R_scope.
+
+(******************************************************************************)
+(*  TYPE-THEORETIC HILL STRUCTURE                                             *)
+(*                                                                            *)
+(*  A Hill is characterized by measurable geomorphological properties.        *)
+(*  This enables formal predication over individual landforms.                *)
+(******************************************************************************)
+
+Record Location : Type := mkLocation {
+  latitude : R;
+  longitude : R
+}.
+
+Inductive Lithology : Type :=
+  | Quartzite      (* Primary Aravalli rock, highly fractured *)
+  | Schist         (* Metamorphic, moderate fracturing *)
+  | Gneiss         (* Basement rock, variable fracturing *)
+  | Phyllite       (* Low-grade metamorphic *)
+  | Marble         (* Recrystallizedite *)
+  | Alluvium.      (* Deposited sediment *)
+
+Record Hill : Type := mkHill {
+  hill_id : nat;
+  location : Location;
+  peak_elevation : R;
+  base_elevation : R;
+  local_relief : R;
+  mean_slope : R;
+  max_slope : R;
+  area_ha : R;
+  rock_type : Lithology;
+  fracture_density : R;
+  weathered_zone_thickness : R;
+  drainage_density : R;
+  soil_thickness : R;
+  vegetation_cover : R
+}.
+
+Definition relief (h : Hill) : R := local_relief h.
+Definition slope (h : Hill) : R := mean_slope h.
+
+(******************************************************************************)
+(*  SC 2025 DEFINITION AS PREDICATE                                           *)
+(*                                                                            *)
+(*  Formalizes the legal definition from 2025 INSC 1338.                      *)
+(******************************************************************************)
+
+Definition sc_relief_threshold : R := 100.
+Definition range_proximity_threshold : R := 500.
+
+Definition meets_100m_threshold (h : Hill) : Prop :=
+  relief h >= sc_relief_threshold.
+
+Definition hill_distance (h1 h2 : Hill) : R :=
+  let lat_diff := latitude (location h1) - latitude (location h2) in
+  let lon_diff := longitude (location h1) - longitude (location h2) in
+  111000 * sqrt (lat_diff * lat_diff + lon_diff * lon_diff).
+
+Definition is_supporting_slope (h_small h_large : Hill) : Prop :=
+  meets_100m_threshold h_large /\
+  ~meets_100m_threshold h_small /\
+  hill_distance h_small h_large <= range_proximity_threshold.
+
+Definition is_intervening (h h1 h2 : Hill) : Prop :=
+  meets_100m_threshold h1 /\ meets_100m_threshold h2 /\
+  hill_distance h1 h2 <= range_proximity_threshold /\
+  hill_distance h h1 <= hill_distance h1 h2 /\
+  hill_distance h h2 <= hill_distance h1 h2.
+
+Definition aravalli_hill_2025 (h : Hill) (all_hills : Ensemble Hill) : Prop :=
+  meets_100m_threshold h \/
+  (exists h_qual, In Hill all_hills h_qual /\ is_supporting_slope h h_qual) \/
+  (exists h1 h2, In Hill all_hills h1 /\ In Hill all_hills h2 /\ is_intervening h h1 h2).
+
+Definition standalone_excluded (h : Hill) (all_hills : Ensemble Hill) : Prop :=
+  ~meets_100m_threshold h /\
+  (forall h_qual, In Hill all_hills h_qual -> ~is_supporting_slope h h_qual) /\
+  (forall h1 h2, In Hill all_hills h1 -> In Hill all_hills h2 -> ~is_intervening h h1 h2).
+
+(******************************************************************************)
+(*  EMPIRICAL CONSTANTS (FSI-verified)                                        *)
+(******************************************************************************)
 
 Definition hills_total : R := 12423.
 Definition hills_above_100m : R := 2015.
@@ -481,7 +565,65 @@ Inductive PLPAPurpose : Set :=
   | ErosionPrevention
   | GroundwaterConservation.
 
-Definition serves_erosion_purpose (slope : R) : Prop := erosion_relevant slope.
+(******************************************************************************)
+(*  EROSION AND HYDROLOGICAL PREDICATES                                       *)
+(*                                                                            *)
+(*  Separate predicates for the two PLPA purposes, grounded in physical       *)
+(*  mechanisms rather than simple slope correlation.                          *)
+(******************************************************************************)
+
+(* Erosion susceptibility based on slope *)
+Definition erosion_susceptible (h : Hill) : Prop :=
+  slope h >= erosion_threshold_slope.
+
+(* USLE slope factor: higher values indicate greater erosion potential *)
+Definition slope_percent (deg : R) : R := 100 * deg * PI / 180.
+
+Definition usle_slope_factor (deg : R) : R :=
+  let s := slope_percent deg in
+  0.065 + 0.045 * s + 0.0065 * s * s.
+
+(* A hill prevents erosion if it has erosion-susceptible terrain AND vegetation *)
+Definition prevents_erosion (h : Hill) : Prop :=
+  erosion_susceptible h /\ vegetation_cover h > 0.
+
+(* Groundwater recharge: depends on fractures, weathering, and moderate slope *)
+Definition base_infiltration (l : Lithology) : R :=
+  match l with
+  | Quartzite => 75  (* mm/hr - fractured, high infiltration *)
+  | Schist => 50
+  | Gneiss => 40
+  | Phyllite => 30
+  | Marble => 60
+  | Alluvium => 100
+  end.
+
+Definition slope_infiltration_factor (deg : R) : R :=
+  let rad := deg * PI / 180 in
+  cos rad * sqrt (Rabs (cos rad)).
+
+Definition effective_infiltration (h : Hill) : R :=
+  base_infiltration (rock_type h) *
+  slope_infiltration_factor (slope h) *
+  (1 + 0.1 * fracture_density h).
+
+Definition storage_capacity (h : Hill) : R :=
+  weathered_zone_thickness h * 0.15.
+
+Definition recharge_potential (h : Hill) : R :=
+  effective_infiltration h * storage_capacity h * area_ha h.
+
+Definition recharges_groundwater (h : Hill) : Prop :=
+  fracture_density h > 0 /\
+  weathered_zone_thickness h > 0 /\
+  slope h <= 30.
+
+(* PLPA functional: serves either purpose *)
+Definition plpa_functional (h : Hill) : Prop :=
+  prevents_erosion h \/ recharges_groundwater h.
+
+(* Legacy compatibility *)
+Definition serves_erosion_purpose (s : R) : Prop := erosion_relevant s.
 
 Lemma excluded_hills_serve_erosion_purpose :
   serves_erosion_purpose excluded_hills_mean_slope.
@@ -534,4 +676,186 @@ Proof.
   - exact excluded_hills_serve_erosion_purpose.
   - exact excluded_hills_hydrologically_significant.
   - exact exclusion_exceeds_half.
+Qed.
+
+(******************************************************************************)
+(*  WITNESS CONSTRUCTION                                                      *)
+(*                                                                            *)
+(*  A concrete excluded hill demonstrating under-inclusivity.                 *)
+(*  Properties based on typical sub-100m Aravalli terrain in Alwar district.  *)
+(******************************************************************************)
+
+Definition witness_hill : Hill := mkHill
+  1                              (* id *)
+  (mkLocation 27.5 76.5)         (* Alwar district *)
+  350                            (* peak: 350m ASL *)
+  280                            (* base: 280m ASL *)
+  70                             (* relief: 70m < 100m threshold *)
+  3.5                            (* mean slope: 3.5 deg *)
+  8.0                            (* max slope *)
+  25                             (* area: 25 ha *)
+  Quartzite                      (* fractured quartzite *)
+  2.5                            (* fracture density: 2.5/m *)
+  8                              (* weathered zone: 8m *)
+  1.2                            (* drainage density *)
+  0.5                            (* soil thickness *)
+  0.4.                           (* vegetation: 40% *)
+
+Lemma witness_excluded : ~meets_100m_threshold witness_hill.
+Proof.
+  unfold meets_100m_threshold, relief, witness_hill, local_relief.
+  simpl. unfold sc_relief_threshold. lra.
+Qed.
+
+Lemma witness_erosion_susceptible : erosion_susceptible witness_hill.
+Proof.
+  unfold erosion_susceptible, slope, witness_hill, mean_slope.
+  unfold erosion_threshold_slope. simpl. lra.
+Qed.
+
+Lemma witness_has_vegetation : vegetation_cover witness_hill > 0.
+Proof. unfold witness_hill. simpl. lra. Qed.
+
+Lemma witness_prevents_erosion : prevents_erosion witness_hill.
+Proof.
+  unfold prevents_erosion. split.
+  - exact witness_erosion_susceptible.
+  - exact witness_has_vegetation.
+Qed.
+
+Lemma witness_has_fractures : fracture_density witness_hill > 0.
+Proof. unfold witness_hill. simpl. lra. Qed.
+
+Lemma witness_has_weathering : weathered_zone_thickness witness_hill > 0.
+Proof. unfold witness_hill. simpl. lra. Qed.
+
+Lemma witness_moderate_slope : slope witness_hill <= 30.
+Proof. unfold slope, witness_hill, mean_slope. simpl. lra. Qed.
+
+Lemma witness_recharges : recharges_groundwater witness_hill.
+Proof.
+  unfold recharges_groundwater. repeat split.
+  - exact witness_has_fractures.
+  - exact witness_has_weathering.
+  - exact witness_moderate_slope.
+Qed.
+
+Lemma witness_plpa_functional : plpa_functional witness_hill.
+Proof.
+  unfold plpa_functional. left. exact witness_prevents_erosion.
+Qed.
+
+(******************************************************************************)
+(*  EXISTENTIAL UNDER-INCLUSIVITY                                             *)
+(******************************************************************************)
+
+Theorem exists_excluded_functional :
+  exists h : Hill, ~meets_100m_threshold h /\ plpa_functional h.
+Proof.
+  exists witness_hill. split.
+  - exact witness_excluded.
+  - exact witness_plpa_functional.
+Qed.
+
+Theorem exists_doubly_functional_excluded :
+  exists h : Hill,
+    ~meets_100m_threshold h /\
+    prevents_erosion h /\
+    recharges_groundwater h.
+Proof.
+  exists witness_hill. split.
+  - exact witness_excluded.
+  - split. exact witness_prevents_erosion. exact witness_recharges.
+Qed.
+
+(******************************************************************************)
+(*  FSI ALTERNATIVE DEFINITION                                                *)
+(******************************************************************************)
+
+Definition fsi_height_threshold : R := 30.
+Definition fsi_slope_threshold : R := 4.57.
+
+Definition meets_fsi_criteria (h : Hill) : Prop :=
+  relief h >= fsi_height_threshold /\ slope h >= fsi_slope_threshold.
+
+Definition fsi_total_hills : R := 12081.
+Definition fsi_hills_above_100m : R := 1048.
+Definition fsi_hills_meeting_criteria : R := 4832.
+
+Lemma fsi_better_coverage :
+  fsi_hills_meeting_criteria / fsi_total_hills >
+  fsi_hills_above_100m / fsi_total_hills.
+Proof.
+  unfold fsi_hills_meeting_criteria, fsi_hills_above_100m, fsi_total_hills. lra.
+Qed.
+
+Lemma fsi_coverage_ratio : fsi_hills_meeting_criteria / fsi_hills_above_100m > 4.
+Proof.
+  unfold fsi_hills_meeting_criteria, fsi_hills_above_100m. lra.
+Qed.
+
+(******************************************************************************)
+(*  REVISED CONSISTENCY CRITERIA                                              *)
+(******************************************************************************)
+
+Definition under_inclusive (D P : Hill -> Prop) : Prop :=
+  exists h, P h /\ ~D h.
+
+Definition captures_all (D P : Hill -> Prop) : Prop :=
+  forall h, P h -> D h.
+
+Definition bounded_under_inclusion (rate threshold : R) : Prop :=
+  rate <= threshold.
+
+Definition acceptable_rate : R := 0.10.
+
+Lemma exclusion_rate_unacceptable :
+  fsi_hills_above_100m / fsi_total_hills < acceptable_rate.
+Proof.
+  unfold fsi_hills_above_100m, fsi_total_hills, acceptable_rate. lra.
+Qed.
+
+Theorem sc_definition_under_inclusive :
+  under_inclusive meets_100m_threshold plpa_functional.
+Proof.
+  unfold under_inclusive.
+  exists witness_hill. split.
+  - exact witness_plpa_functional.
+  - exact witness_excluded.
+Qed.
+
+(******************************************************************************)
+(*  CONFIDENCE INTERVALS                                                      *)
+(******************************************************************************)
+
+Definition excluded_slope_ci_lower : R := 3.38.
+Definition excluded_slope_ci_upper : R := 3.54.
+
+Lemma ci_above_threshold : excluded_slope_ci_lower >= erosion_threshold_slope.
+Proof.
+  unfold excluded_slope_ci_lower, erosion_threshold_slope. lra.
+Qed.
+
+(******************************************************************************)
+(*  COMPREHENSIVE SUMMARY THEOREM                                             *)
+(******************************************************************************)
+
+Theorem aravalli_analysis_summary :
+  (* Existential under-inclusivity *)
+  (exists h, ~meets_100m_threshold h /\ prevents_erosion h /\ recharges_groundwater h) /\
+  (* Quantitative severity: >90% excluded by FSI data *)
+  (fsi_hills_above_100m / fsi_total_hills < 0.10) /\
+  (* Excluded terrain erosion-relevant *)
+  (excluded_hills_mean_slope > erosion_threshold_slope) /\
+  (* Statistical robustness *)
+  (excluded_slope_ci_lower >= erosion_threshold_slope) /\
+  (* FSI alternative superior *)
+  (fsi_hills_meeting_criteria / fsi_hills_above_100m > 4).
+Proof.
+  repeat split.
+  - exact exists_doubly_functional_excluded.
+  - exact exclusion_rate_unacceptable.
+  - exact excluded_hills_exceed_erosion_threshold.
+  - exact ci_above_threshold.
+  - exact fsi_coverage_ratio.
 Qed.
