@@ -288,3 +288,35 @@ Proof.
   unfold hills_below_100m, hills_total.
   lra.
 Qed.
+
+Definition hydrologically_significant (slope : R) : Prop :=
+  slope >= erosion_threshold_slope.
+
+Lemma excluded_hills_hydrologically_significant :
+  hydrologically_significant excluded_hills_mean_slope.
+Proof.
+  unfold hydrologically_significant.
+  exact excluded_hills_are_erosion_relevant.
+Qed.
+
+Theorem excluded_hills_serve_both_purposes :
+  serves_erosion_purpose excluded_hills_mean_slope /\
+  hydrologically_significant excluded_hills_mean_slope.
+Proof.
+  split.
+  - exact excluded_hills_serve_erosion_purpose.
+  - exact excluded_hills_hydrologically_significant.
+Qed.
+
+Theorem definition_inconsistent_with_plpa :
+  excluded_hills_count > 0 /\
+  serves_erosion_purpose excluded_hills_mean_slope /\
+  hydrologically_significant excluded_hills_mean_slope /\
+  hills_below_100m / hills_total > 1/2.
+Proof.
+  repeat split.
+  - exact excluded_hills_exist.
+  - exact excluded_hills_serve_erosion_purpose.
+  - exact excluded_hills_hydrologically_significant.
+  - exact exclusion_exceeds_half.
+Qed.
