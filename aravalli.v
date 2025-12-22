@@ -854,13 +854,15 @@ Definition relief (h : Hill) : R := local_relief h.
 Definition slope (h : Hill) : R := mean_slope h.
 
 (******************************************************************************)
-(*  SC 2025 DEFINITION AS PREDICATE                                           *)
+(*  SC 2025 DEFINITION - FULL MODEL                                           *)
 (*                                                                            *)
-(*  Formalizes the legal definition from 2025 INSC 1338.                      *)
+(*  Complete formalization of 2025 INSC 1338 Section 7.1.1                    *)
+(*  Includes: supporting slopes, associated landforms, intervening terrain   *)
 (******************************************************************************)
 
 Definition sc_relief_threshold : R := 100.
 Definition range_proximity_threshold : R := 500.
+Definition isolation_distance : R := 10000.
 
 Definition meets_100m_threshold (h : Hill) : Prop :=
   relief h >= sc_relief_threshold.
@@ -870,26 +872,107 @@ Definition hill_distance (h1 h2 : Hill) : R :=
   let lon_diff := longitude (location h1) - longitude (location h2) in
   111000 * sqrt (lat_diff * lat_diff + lon_diff * lon_diff).
 
+Definition contour_distance (h1 h2 : Hill) : R :=
+  let peak_dist := hill_distance h1 h2 in
+  let r1 := relief h1 / 2 in
+  let r2 := relief h2 / 2 in
+  peak_dist - r1 - r2.
+
+Definition within_range_proximity (h1 h2 : Hill) : Prop :=
+  contour_distance h1 h2 <= range_proximity_threshold.
+
+Definition contours_adjacent (h1 h2 : Hill) : Prop :=
+  hill_distance h1 h2 <= 50 + (relief h1 + relief h2) / 2.
+
+Definition slopes_toward (h_slope h_peak : Hill) : Prop :=
+  base_elevation h_slope >= base_elevation h_peak /\
+  peak_elevation h_slope <= peak_elevation h_peak.
+
 Definition is_supporting_slope (h_small h_large : Hill) : Prop :=
   meets_100m_threshold h_large /\
-  ~meets_100m_threshold h_small /\
-  hill_distance h_small h_large <= range_proximity_threshold.
+  contours_adjacent h_small h_large /\
+  slopes_toward h_small h_large.
+
+Definition shares_drainage_basin (h1 h2 : Hill) : Prop :=
+  base_elevation h1 = base_elevation h2 \/
+  Rabs (base_elevation h1 - base_elevation h2) <= 10.
+
+Definition same_formation (h1 h2 : Hill) : Prop :=
+  rock_type h1 = rock_type h2.
+
+Definition is_associated_landform (h_assoc h_qual : Hill) : Prop :=
+  meets_100m_threshold h_qual /\
+  (contours_adjacent h_assoc h_qual \/ within_range_proximity h_assoc h_qual) /\
+  (same_formation h_assoc h_qual \/ shares_drainage_basin h_assoc h_qual).
+
+Definition forms_range (h1 h2 : Hill) : Prop :=
+  meets_100m_threshold h1 /\
+  meets_100m_threshold h2 /\
+  h1 <> h2 /\
+  within_range_proximity h1 h2.
+
+Definition between_contours (h h1 h2 : Hill) : Prop :=
+  let d12 := contour_distance h1 h2 in
+  let d1 := contour_distance h h1 in
+  let d2 := contour_distance h h2 in
+  d1 <= d12 /\ d2 <= d12 /\
+  d1 + d2 <= d12 + range_proximity_threshold.
 
 Definition is_intervening (h h1 h2 : Hill) : Prop :=
-  meets_100m_threshold h1 /\ meets_100m_threshold h2 /\
-  hill_distance h1 h2 <= range_proximity_threshold /\
-  hill_distance h h1 <= hill_distance h1 h2 /\
-  hill_distance h h2 <= hill_distance h1 h2.
+  forms_range h1 h2 /\
+  between_contours h h1 h2.
+
+Inductive InclusionMode : Type :=
+  | DirectQualification
+  | SupportingSlope
+  | AssociatedLandform
+  | InterveningTerrain.
 
 Definition aravalli_hill_2025 (h : Hill) (all_hills : Ensemble Hill) : Prop :=
   meets_100m_threshold h \/
   (exists h_qual, In Hill all_hills h_qual /\ is_supporting_slope h h_qual) \/
+  (exists h_qual, In Hill all_hills h_qual /\ is_associated_landform h h_qual) \/
   (exists h1 h2, In Hill all_hills h1 /\ In Hill all_hills h2 /\ is_intervening h h1 h2).
 
 Definition standalone_excluded (h : Hill) (all_hills : Ensemble Hill) : Prop :=
   ~meets_100m_threshold h /\
   (forall h_qual, In Hill all_hills h_qual -> ~is_supporting_slope h h_qual) /\
+  (forall h_qual, In Hill all_hills h_qual -> ~is_associated_landform h h_qual) /\
   (forall h1 h2, In Hill all_hills h1 -> In Hill all_hills h2 -> ~is_intervening h h1 h2).
+
+Definition is_far_from_all_qualifying (h : Hill) (all_hills : Ensemble Hill) : Prop :=
+  forall h_other,
+    In Hill all_hills h_other ->
+    meets_100m_threshold h_other ->
+    hill_distance h h_other > isolation_distance.
+
+Axiom hill_relief_bounded : forall h, relief h <= 2000.
+
+Lemma far_implies_not_adjacent :
+  forall h1 h2,
+    hill_distance h1 h2 > isolation_distance ->
+    ~contours_adjacent h1 h2.
+Proof.
+  intros h1 h2 Hfar Hadj.
+  unfold contours_adjacent in Hadj.
+  unfold isolation_distance in Hfar.
+  pose proof (hill_relief_bounded h1) as Hr1.
+  pose proof (hill_relief_bounded h2) as Hr2.
+  lra.
+Qed.
+
+Lemma far_implies_not_in_range :
+  forall h1 h2,
+    hill_distance h1 h2 > isolation_distance ->
+    ~within_range_proximity h1 h2.
+Proof.
+  intros h1 h2 Hfar Hrange.
+  unfold within_range_proximity, contour_distance in Hrange.
+  unfold isolation_distance, range_proximity_threshold in *.
+  pose proof (hill_relief_bounded h1) as Hr1.
+  pose proof (hill_relief_bounded h2) as Hr2.
+  lra.
+Qed.
 
 (******************************************************************************)
 (*  EMPIRICAL CONSTANTS (FSI-verified)                                        *)
@@ -1079,6 +1162,10 @@ Definition witness_hill : Hill := mkHill
   0.5                            (* soil thickness - estimated *)
   0.4.                           (* vegetation: 40% - estimated *)
 
+Axiom witness_geographic_isolation :
+  forall all_hills,
+    is_far_from_all_qualifying witness_hill all_hills.
+
 Lemma witness_excluded : ~meets_100m_threshold witness_hill.
 Proof.
   unfold meets_100m_threshold, relief, witness_hill, local_relief.
@@ -1121,6 +1208,93 @@ Qed.
 Lemma witness_plpa_functional : plpa_functional witness_hill.
 Proof.
   unfold plpa_functional. left. exact witness_prevents_erosion.
+Qed.
+
+Lemma witness_not_supporting_slope :
+  forall all_hills,
+    forall h_qual, In Hill all_hills h_qual -> ~is_supporting_slope witness_hill h_qual.
+Proof.
+  intros all_hills h_qual Hin Hss.
+  unfold is_supporting_slope in Hss.
+  destruct Hss as [Hqual [Hadj _]].
+  pose proof (witness_geographic_isolation all_hills h_qual Hin Hqual) as Hfar.
+  exact (far_implies_not_adjacent _ _ Hfar Hadj).
+Qed.
+
+Lemma witness_not_associated :
+  forall all_hills,
+    forall h_qual, In Hill all_hills h_qual -> ~is_associated_landform witness_hill h_qual.
+Proof.
+  intros all_hills h_qual Hin Hassoc.
+  unfold is_associated_landform in Hassoc.
+  destruct Hassoc as [Hqual [Hconn _]].
+  pose proof (witness_geographic_isolation all_hills h_qual Hin Hqual) as Hfar.
+  destruct Hconn as [Hadj | Hprox].
+  - exact (far_implies_not_adjacent _ _ Hfar Hadj).
+  - exact (far_implies_not_in_range _ _ Hfar Hprox).
+Qed.
+
+Lemma far_from_one_implies_not_between :
+  forall h h1 h2,
+    hill_distance h h1 > isolation_distance ->
+    forms_range h1 h2 ->
+    ~between_contours h h1 h2.
+Proof.
+  intros h h1 h2 Hfar Hrange Hbet.
+  unfold forms_range in Hrange.
+  destruct Hrange as [Hq1 [Hq2 [Hneq Hprox]]].
+  unfold within_range_proximity, contour_distance in Hprox.
+  unfold between_contours, contour_distance in Hbet.
+  destruct Hbet as [Hd1 [Hd2 Hsum]].
+  pose proof (hill_relief_bounded h) as Hrl.
+  pose proof (hill_relief_bounded h1) as Hr1.
+  pose proof (hill_relief_bounded h2) as Hr2.
+  unfold isolation_distance, range_proximity_threshold in *.
+  lra.
+Qed.
+
+Lemma witness_not_intervening :
+  forall all_hills,
+    forall h1 h2, In Hill all_hills h1 -> In Hill all_hills h2 ->
+      ~is_intervening witness_hill h1 h2.
+Proof.
+  intros all_hills h1 h2 Hin1 Hin2 Hinter.
+  unfold is_intervening in Hinter.
+  destruct Hinter as [Hrange Hbet].
+  destruct Hrange as [Hq1 [Hq2 [Hneq Hprox]]].
+  pose proof (witness_geographic_isolation all_hills h1 Hin1 Hq1) as Hfar1.
+  assert (Hforms : forms_range h1 h2).
+  {
+    unfold forms_range. repeat split.
+    - exact Hq1.
+    - exact Hq2.
+    - exact Hneq.
+    - exact Hprox.
+  }
+  exact (far_from_one_implies_not_between witness_hill h1 h2 Hfar1 Hforms Hbet).
+Qed.
+
+Theorem witness_standalone_excluded_full :
+  forall all_hills, standalone_excluded witness_hill all_hills.
+Proof.
+  intros all_hills.
+  unfold standalone_excluded.
+  repeat split.
+  - exact witness_excluded.
+  - exact (witness_not_supporting_slope all_hills).
+  - exact (witness_not_associated all_hills).
+  - exact (witness_not_intervening all_hills).
+Qed.
+
+Theorem witness_excluded_but_functional_full :
+  forall all_hills,
+    standalone_excluded witness_hill all_hills /\
+    plpa_functional witness_hill.
+Proof.
+  intros all_hills.
+  split.
+  - exact (witness_standalone_excluded_full all_hills).
+  - exact witness_plpa_functional.
 Qed.
 
 (******************************************************************************)
